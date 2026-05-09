@@ -79,28 +79,53 @@
   }
   .stats {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
     background: var(--bp-surface);
     border-radius: var(--bp-radius);
-    padding: 16px;
+    padding: 14px 8px;
     margin-bottom: 20px;
   }
   .stat {
     text-align: center;
+    min-width: 0;
   }
   .stat .v {
-    font-size: 22px;
+    font-size: 18px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.01em;
   }
   .stat .l {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--bp-text-dim);
     margin-top: 2px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
+  }
+  .stat .swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-left: 4px;
+    vertical-align: -1px;
+    border: 1px solid rgba(255,255,255,0.15);
+  }
+  .flavor-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 20px;
+  }
+  .flavor-tag {
+    background: var(--bp-surface);
+    border: 1px solid var(--bp-divider);
+    border-radius: 999px;
+    padding: 5px 11px;
+    font-size: 12px;
+    color: var(--bp-text);
+    text-transform: capitalize;
   }
   .ctas {
     display: flex;
@@ -288,6 +313,27 @@ function estimateFG(og, attMin, attMax) {
   return 1 + (og - 1) * (1 - att / 100);
 }
 
+// Standard SRM-to-RGB approximation (Morey's curve, sampled at common values).
+// Picks the closest entry rather than interpolating — visually indistinguishable
+// for SRM swatches at this size and dramatically simpler.
+const SRM_COLORS = [
+  [1, '#FFE699'], [2, '#FFD878'], [3, '#FFCA5A'], [4, '#FFBF42'],
+  [6, '#F8A600'], [8, '#EA8F00'], [10, '#E58500'], [13, '#C66200'],
+  [17, '#B85100'], [20, '#964D00'], [24, '#6E3300'], [30, '#36180F'],
+  [35, '#261912'], [40, '#16100C'],
+];
+function srmToColor(srm) {
+  if (!isFinite(srm) || srm <= 1) return SRM_COLORS[0][1];
+  if (srm >= 40) return SRM_COLORS[SRM_COLORS.length - 1][1];
+  let best = SRM_COLORS[0];
+  let bestDiff = Infinity;
+  for (const entry of SRM_COLORS) {
+    const diff = Math.abs(entry[0] - srm);
+    if (diff < bestDiff) { best = entry; bestDiff = diff; }
+  }
+  return best[1];
+}
+
 // Decode a compact hop usage string (matches HopUsage.compactString in iOS):
 //   "m" → mash, "b60" → 60 min boil, "f" → flameout, "w20" → 20 min WP, "d1" → dry hop #1
 function decodeHopUsage(u) {
@@ -324,6 +370,8 @@ function renderRecipe(r) {
   const primaryYeast = (r.y && r.y[0]) || null;
   const fg = estimateFG(og, primaryYeast?.amn, primaryYeast?.amx);
   const abvVal = abv(og, fg);
+  const srm = r.sr || 0;
+  const srmColor = srmToColor(srm);
 
   let html = `
     <h1 class="recipe-name">${escape(r.n || "Untitled Recipe")}</h1>
@@ -331,9 +379,19 @@ function renderRecipe(r) {
 
     <div class="stats">
       <div class="stat"><div class="v">${fmt(og, 3)}</div><div class="l">OG</div></div>
+      <div class="stat"><div class="v">${fg ? fmt(fg, 3) : "—"}</div><div class="l">FG</div></div>
       <div class="stat"><div class="v">${abvVal ?? "—"}${abvVal ? "%" : ""}</div><div class="l">ABV</div></div>
       <div class="stat"><div class="v">${Math.round(r.ib || 0)}</div><div class="l">IBU</div></div>
+      <div class="stat">
+        <div class="v">${fmt(srm, 1)}<span class="swatch" style="background:${srmColor}"></span></div>
+        <div class="l">SRM</div>
+      </div>
     </div>
+
+    ${r.fp?.length ? `
+      <div class="flavor-tags">
+        ${r.fp.map(t => `<span class="flavor-tag">${escape(t)}</span>`).join("")}
+      </div>` : ""}
 
     <div class="ctas">
       <a class="btn btn-primary" href="${deepLink}">Open in Brew Pilot</a>
