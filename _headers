@@ -1,0 +1,6 @@
+# Cloudflare Pages headers config.
+# The Apple App Site Association file MUST be served as application/json
+# with no redirects, or iOS won't trust the Universal Link handshake.
+/.well-known/apple-app-site-association
+  Content-Type: application/json
+  Cache-Control: public, max-age=3600

@@ -1,0 +1,15 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["D37KRT33NA.Holder.Brew-Pilot"],
+        "components": [
+          {
+            "/": "/r",
+            "comment": "Recipe share link — decoded by the Brew Pilot iOS app"
+          }
+        ]
+      }
+    ]
+  }
+}
