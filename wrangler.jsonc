@@ -1,0 +1,23 @@
+// Cloudflare Workers static-assets config.
+// This file tells the Workers runtime "serve everything in this folder as
+// static files" — no Worker code, no build step. Equivalent to the old
+// Cloudflare Pages zero-config deploy.
+//
+// Why each setting matters:
+//   - "assets.directory": "./"  — every file in this repo gets served verbatim.
+//   - "html_handling": "auto-trailing-slash"  — lets /r resolve to r.html
+//     (and /foo/ resolve to /foo/index.html if needed). Critical for the
+//     Universal Link path /r?d=… to find r.html.
+//   - "not_found_handling": "404-page"  — anything we don't have a file for
+//     returns 404 instead of falling back to index.html. Important so the
+//     AASA file isn't accidentally masked by a SPA fallback.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "brewpilot-share-page",
+  "compatibility_date": "2025-05-09",
+  "assets": {
+    "directory": "./",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  }
+}
