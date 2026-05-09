@@ -240,7 +240,7 @@
 //   1. Read ?d=… (URL-safe base64, no padding)
 //   2. Convert to standard base64, add padding, decode to bytes
 //   3. Inflate with DecompressionStream('deflate-raw') (matches iOS COMPRESSION_ZLIB)
-//   4. JSON-parse
+//   4. JSON-parse — yields a CompactRecipe (short field names, see CompactRecipe.swift)
 async function decodeRecipeFromQuery() {
   const params = new URLSearchParams(window.location.search);
   const d = params.get("d");
@@ -263,7 +263,7 @@ async function decodeRecipeFromQuery() {
   return JSON.parse(json);
 }
 
-// ------- Rendering -------
+// ------- Helpers -------
 function escape(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -277,31 +277,62 @@ function abv(og, fg) {
   if (!og || !fg) return null;
   return ((og - fg) * 131.25).toFixed(1);
 }
-function estimateFG(og, attenuation) {
+function estimateFG(og, attMin, attMax) {
   if (!og) return null;
-  const att = attenuation != null ? attenuation : 75;
+  // Use the midpoint of the yeast's attenuation range; default to ~75% if unknown.
+  let att;
+  if (attMin != null && attMax != null) att = (attMin + attMax) / 2;
+  else if (attMin != null) att = attMin;
+  else if (attMax != null) att = attMax;
+  else att = 75;
   return 1 + (og - 1) * (1 - att / 100);
 }
 
+// Decode a compact hop usage string (matches HopUsage.compactString in iOS):
+//   "m" → mash, "b60" → 60 min boil, "f" → flameout, "w20" → 20 min WP, "d1" → dry hop #1
+function decodeHopUsage(u) {
+  if (!u) return "";
+  if (u === "m") return "Mash";
+  if (u === "f") return "Flameout";
+  const minutes = parseInt(u.slice(1), 10);
+  if (u.startsWith("b")) return `${minutes} min boil`;
+  if (u.startsWith("w")) return `${minutes} min whirlpool`;
+  if (u.startsWith("d")) return `Dry hop #${minutes || 1}`;
+  return u;
+}
+
+// Decode a compact adjunct timing string (matches AdjunctTiming.compactString):
+//   "b15" → 15 min boil, "f" → flameout, "fr" → fermenter, "fg" → at FG, "sc" → secondary
+function decodeAdjunctTiming(t) {
+  if (!t) return "";
+  if (t === "f")  return "Flameout";
+  if (t === "fr") return "Fermenter";
+  if (t === "fg") return "At FG";
+  if (t === "sc") return "Secondary";
+  if (t.startsWith("b")) return `${parseInt(t.slice(1), 10) || 0} min boil`;
+  return t;
+}
+
+// ------- Rendering -------
 function renderRecipe(r) {
   const main = document.getElementById("main");
   const dParam = new URLSearchParams(window.location.search).get("d");
   const deepLink = `brewpilot://recipe?d=${dParam}`;
 
-  // Header + stats
-  const og = r.targetOG;
-  const att = r.yeastOptions?.[0]?.attenuation;
-  const fg = estimateFG(og, att);
+  // Header + stats — note CompactRecipe field names (n, og, ib, sr, y, …)
+  const og = r.og;
+  const primaryYeast = (r.y && r.y[0]) || null;
+  const fg = estimateFG(og, primaryYeast?.amn, primaryYeast?.amx);
   const abvVal = abv(og, fg);
 
   let html = `
-    <h1 class="recipe-name">${escape(r.name || "Untitled Recipe")}</h1>
-    ${r.style ? `<p class="style">${escape(r.style)}</p>` : ""}
+    <h1 class="recipe-name">${escape(r.n || "Untitled Recipe")}</h1>
+    ${r.s ? `<p class="style">${escape(r.s)}</p>` : ""}
 
     <div class="stats">
       <div class="stat"><div class="v">${fmt(og, 3)}</div><div class="l">OG</div></div>
       <div class="stat"><div class="v">${abvVal ?? "—"}${abvVal ? "%" : ""}</div><div class="l">ABV</div></div>
-      <div class="stat"><div class="v">${Math.round(r.targetIBU || 0)}</div><div class="l">IBU</div></div>
+      <div class="stat"><div class="v">${Math.round(r.ib || 0)}</div><div class="l">IBU</div></div>
     </div>
 
     <div class="ctas">
@@ -311,16 +342,16 @@ function renderRecipe(r) {
   `;
 
   // Grain bill
-  if (r.grainBill?.length) {
+  if (r.g?.length) {
     html += `
       <section class="card">
         <h2>Grain Bill</h2>
         <table class="ingredients">
           <tbody>
-          ${r.grainBill.map(g => `
+          ${r.g.map(g => `
             <tr>
-              <td>${escape(g.name)}</td>
-              <td class="amount">${fmt(g.amountLb, 2)} lb</td>
+              <td>${escape(g.n)}</td>
+              <td class="amount">${fmt(g.lb, 2)} lb</td>
             </tr>`).join("")}
           </tbody>
         </table>
@@ -328,23 +359,41 @@ function renderRecipe(r) {
   }
 
   // Hops
-  if (r.hopSchedule?.length) {
+  if (r.h?.length) {
     html += `
       <section class="card">
         <h2>Hop Schedule</h2>
         <table class="ingredients">
           <thead>
-            <tr><th>Hop</th><th>Amount</th><th class="amount">Time</th></tr>
+            <tr><th>Hop</th><th>Amount</th><th class="amount">Timing</th></tr>
           </thead>
           <tbody>
-          ${r.hopSchedule.map(h => {
-            const kind = ({ boil: "min boil", whirlpool: "WP", dryhop: "dry hop" })[h.type] || "";
-            const time = h.timeMinutes != null ? `${h.timeMinutes} ${kind}` : kind;
+          ${r.h.map(h => `
+            <tr>
+              <td>${escape(h.n)}${h.wc ? ' <span style="color:var(--bp-text-dim)">· whole cone</span>' : ""}</td>
+              <td>${fmt(h.oz, 2)} oz · ${fmt(h.aa, 1)}% AA</td>
+              <td class="amount">${escape(decodeHopUsage(h.u))}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </section>`;
+  }
+
+  // Adjuncts
+  if (r.a?.length) {
+    html += `
+      <section class="card">
+        <h2>Adjuncts</h2>
+        <table class="ingredients">
+          <tbody>
+          ${r.a.map(adj => {
+            const amount = adj.lb != null ? `${fmt(adj.lb, 2)} lb`
+                          : (adj.q != null ? `${fmt(adj.q, 2)} ${escape(adj.un || "")}`.trim() : "");
             return `
               <tr>
-                <td>${escape(h.name)}</td>
-                <td>${fmt(h.amountOz, 2)} oz · ${fmt(h.alphaAcid, 1)}% AA</td>
-                <td class="amount">${escape(time.trim())}</td>
+                <td>${escape(adj.n)}</td>
+                <td>${amount}</td>
+                <td class="amount">${escape(decodeAdjunctTiming(adj.tm))}</td>
               </tr>`;
           }).join("")}
           </tbody>
@@ -353,50 +402,70 @@ function renderRecipe(r) {
   }
 
   // Yeast
-  if (r.yeastOptions?.length) {
+  if (r.y?.length) {
     html += `
       <section class="card">
         <h2>Yeast</h2>
         <table class="ingredients">
           <tbody>
-          ${r.yeastOptions.map(y => `
-            <tr>
-              <td>${escape(y.name)}${y.lab ? ` <span style="color:var(--bp-text-dim)">· ${escape(y.lab)}</span>` : ""}</td>
-              <td class="amount">${y.attenuation ? `${y.attenuation}% att` : ""}</td>
-            </tr>`).join("")}
+          ${r.y.map(y => {
+            const att = (y.amn && y.amx) ? `${y.amn}–${y.amx}% att`
+                       : (y.amn ? `${y.amn}% att`
+                       : (y.amx ? `${y.amx}% att` : ""));
+            return `
+              <tr>
+                <td>${escape(y.n)}${y.mf ? ` <span style="color:var(--bp-text-dim)">· ${escape(y.mf)}</span>` : ""}</td>
+                <td class="amount">${att}</td>
+              </tr>`;
+          }).join("")}
           </tbody>
         </table>
       </section>`;
   }
 
-  // Water profile
-  if (r.waterProfile && r.useWaterProfile !== false) {
-    const w = r.waterProfile;
-    html += `
-      <section class="card">
-        <h2>Water Profile${w.name ? ` · ${escape(w.name)}` : ""}</h2>
-        <div class="water-grid">
-          <div><div class="val">${Math.round(w.calcium || 0)}</div><div class="ion">Ca²⁺</div></div>
-          <div><div class="val">${Math.round(w.magnesium || 0)}</div><div class="ion">Mg²⁺</div></div>
-          <div><div class="val">${Math.round(w.sodium || 0)}</div><div class="ion">Na⁺</div></div>
-          <div><div class="val">${Math.round(w.sulfate || 0)}</div><div class="ion">SO₄²⁻</div></div>
-          <div><div class="val">${Math.round(w.chloride || 0)}</div><div class="ion">Cl⁻</div></div>
-          <div><div class="val">${Math.round(w.bicarbonate || 0)}</div><div class="ion">HCO₃⁻</div></div>
-        </div>
-      </section>`;
+  // Water profile (CompactWaterProfile is salt additions in grams, NOT ion concentrations)
+  if (r.wp) {
+    const wp = r.wp;
+    const salts = [
+      { label: "Gypsum",     v: wp.gy },
+      { label: "CaCl₂",      v: wp.cc },
+      { label: "Epsom",      v: wp.es },
+      { label: "Baking Soda",v: wp.bs },
+      { label: "Slaked Lime",v: wp.sl },
+      { label: "Chalk",      v: wp.cb },
+    ].filter(s => s.v && s.v > 0);
+    if (salts.length || wp.n) {
+      const refVol = wp.rv || 5.0;
+      html += `
+        <section class="card">
+          <h2>Water Profile${wp.n ? ` · ${escape(wp.n)}` : ""}</h2>
+          ${salts.length ? `
+            <p style="font-size:12px;color:var(--bp-text-dim);margin:0 0 12px;letter-spacing:0.04em;text-transform:uppercase;">
+              Salt additions per ${refVol} gal
+            </p>
+            <div class="water-grid">
+              ${salts.map(s => `
+                <div>
+                  <div class="val">${fmt(s.v, 1)} g</div>
+                  <div class="ion">${s.label}</div>
+                </div>`).join("")}
+            </div>` : ""}
+          ${wp.no ? `<p style="margin:12px 0 0;font-size:13px;color:var(--bp-text-dim);">${escape(wp.no)}</p>` : ""}
+        </section>`;
+    }
   }
 
   // Notes
-  if (r.notes && r.notes.trim()) {
+  if (r.no && r.no.trim()) {
     html += `
       <section class="card">
         <h2>Notes</h2>
-        <div class="notes">${escape(r.notes)}</div>
+        <div class="notes">${escape(r.no)}</div>
       </section>`;
   }
 
   main.innerHTML = html;
-  document.title = `${r.name || "Recipe"} · Brew Pilot`;
+  document.title = `${r.n || "Recipe"} · Brew Pilot`;
 }
 
 function renderError(message) {
